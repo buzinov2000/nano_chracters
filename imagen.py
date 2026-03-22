@@ -56,6 +56,7 @@ async def _generate_single(
     sketch_bytes: bytes | None = None,
     image_size: str = "1K",
     timeout_ms: int = 300_000,
+    extra_image_config: dict | None = None,
 ) -> bytes | None:
     """Один вызов Gemini Image с retry — возвращает bytes картинки или None."""
     client = _get_client(timeout_ms)
@@ -65,9 +66,13 @@ async def _generate_single(
         parts.append(types.Part.from_bytes(data=sketch_bytes, mime_type="image/jpeg"))
     parts.append(types.Part.from_text(text=prompt))
 
+    image_cfg = {"image_size": image_size}
+    if extra_image_config:
+        image_cfg.update(extra_image_config)
+
     config = types.GenerateContentConfig(
         response_modalities=["TEXT", "IMAGE"],
-        image_config=types.ImageConfig(image_size=image_size),
+        image_config=types.ImageConfig(**image_cfg),
     )
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -129,9 +134,8 @@ async def generate_images(
         model = IMAGE_MODELS["fast"]["model"]
 
     if grid:
-        grid_prompt = f"{prompt}\n\nGenerate a 2x2 grid of 4 different variations of this character."
         image_bytes = await _generate_single(
-            grid_prompt, model, sketch_bytes,
+            prompt, model, sketch_bytes,
             image_size=image_size, timeout_ms=timeout_ms,
         )
         if image_bytes:

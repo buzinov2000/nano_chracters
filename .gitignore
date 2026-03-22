@@ -11,6 +11,9 @@ env/
 # Environment variables
 .env
 
+# User data (persistent settings)
+user_data.json
+
 # IDE
 .vscode/
 .idea/

@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 
 from config import TELEGRAM_BOT_TOKEN, IMAGE_MODELS
-from session import get_session, reset_session
+from session import get_session, reset_session, save_default_model
 from agent import generate_prompt
 from imagen import generate_images, GenerationError
 from grid import make_grid
@@ -120,10 +120,11 @@ async def callback_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = update.effective_chat.id
     session = get_session(chat_id)
     session.image_mode = mode
+    save_default_model(mode)
     info = IMAGE_MODELS[mode]
 
     await query.edit_message_text(
-        f"Модель переключена: {info['label']} ({info['count']} шт)",
+        f"Модель переключена: {info['label']} ({info['count']} шт) — установлена по умолчанию",
     )
 
 
@@ -283,7 +284,7 @@ async def _run_full_pipeline(chat_id: int, sketch: bytes, caption: str, ref_imag
     await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
 
     try:
-        prompt, suggestions = await generate_prompt(sketch, caption, ref_images=ref_images)
+        prompt, suggestions = await generate_prompt(sketch, caption, ref_images=ref_images, grid=info.get("grid", False))
     except Exception:
         logger.exception("Ошибка генерации промпта")
         await context.bot.send_message(chat_id, "Не удалось сгенерировать промпт. Попробуйте ещё раз.")

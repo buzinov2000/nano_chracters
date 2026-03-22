@@ -13,15 +13,16 @@ client = genai.Client(
     http_options=types.HttpOptions(timeout=60_000),  # 60 сек для промпт-агента
 )
 
-_system_prompt: str | None = None
+_prompt_cache: dict[str, str] = {}
 
 
-def _load_system_prompt() -> str:
-    global _system_prompt
-    if _system_prompt is None:
-        path = Path(__file__).parent / "prompts" / "prompt_agent.txt"
-        _system_prompt = path.read_text(encoding="utf-8")
-    return _system_prompt
+def _load_system_prompt(grid: bool = False) -> str:
+    key = "grid" if grid else "default"
+    if key not in _prompt_cache:
+        filename = "prompt_agent_grid.txt" if grid else "prompt_agent.txt"
+        path = Path(__file__).parent / "prompts" / filename
+        _prompt_cache[key] = path.read_text(encoding="utf-8")
+    return _prompt_cache[key]
 
 
 def _parse_response(text: str) -> tuple[str, list[str]]:
@@ -53,9 +54,10 @@ async def generate_prompt(
     sketch_bytes: bytes,
     hypothesis: str,
     ref_images: list[bytes] | None = None,
+    grid: bool = False,
 ) -> tuple[str, list[str]]:
     """Генерирует промпт для image generation на основе скетча, гипотезы и рефов."""
-    system_prompt = _load_system_prompt()
+    system_prompt = _load_system_prompt(grid=grid)
 
     parts = [
         types.Part.from_text(text=system_prompt),

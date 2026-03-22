@@ -36,3 +36,4 @@ IMAGE_MODELS = {
 }
 
 DEFAULT_IMAGE_MODE = "fast"
+USER_DATA_FILE = "user_data.json"
