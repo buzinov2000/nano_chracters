@@ -30,7 +30,7 @@ IMAGE_MODELS = {
         "count": 4,
         "image_size": "2K",
         "grid": True,           # grid 2x2 при 2K — каждая картинка ~1K
-        "timeout": 300_000,
+        "timeout": 600_000,     # 600 сек — preview-модель может быть медленной
         "label": "Nano Banana 2 (качество)",
     },
 }
