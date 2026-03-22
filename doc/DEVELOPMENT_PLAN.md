@@ -305,15 +305,98 @@ SUGGESTIONS:
 
 ---
 
-## Не делать сейчас (бэклог)
+## Дополнительные этапы (реализованы после основного плана)
 
-Эти задачи **исключены** из текущего плана — они на потом:
+### Доп. 1 — Поддержка медиагрупп (скетч + рефы)
+- Telegram отправляет несколько фото как отдельные update
+- Буферизация через `job_queue.run_once` с задержкой 1.5 сек
+- Первое фото → скетч, остальные → рефы для промпт-агента
 
-- ❌ Транскрипция голосовых (Этап 7 из архитектурного документа)
-- ❌ Деплой на VPS и systemd — делается вручную после тестирования локально
-- ❌ Персистентность сессий между перезапусками
-- ❌ Переключение на Nano Banana 2 (`gemini-3.1-flash-image-preview`) — рассмотреть после проверки качества
+### Доп. 2 — Переключение моделей
+- 3 модели: Nano Banana (fast), Nano Banana Pro, Nano Banana 2 (quality)
+- Конфигурация в `config.py` → `IMAGE_MODELS` dict
+- `/model` команда с inline-клавиатурой
+- Дефолтная модель сохраняется между перезапусками в `user_data.json`
+
+### Доп. 3 — Меню бота и inline-кнопки
+- Команды зарегистрированы через `set_my_commands` в `post_init`
+- Inline-кнопки с номерами под сеткой → отправка варианта как документ в фоне (`asyncio.create_task`)
+- Кнопка «Ещё 2 варианта» для генерации дополнительных
+
+### Доп. 4 — Grid 2x2 для Pro/Quality моделей
+- Один API-вызов вместо четырёх → экономия и скорость
+- Промпт-агент использует отдельный системный промпт (`prompt_agent_grid.txt`) с инструкцией про grid
+- Разрезка grid-изображения на 4 варианта через Pillow (`_split_grid`)
+- Grid-инструкция не теряется при `/prompt_edit`, т.к. вшита в системный промпт агента
+
+### Доп. 5 — Per-model таймауты и retry
+- Каждая модель имеет свой таймаут в конфиге (300-600 сек)
+- `genai.Client` кэшируется по таймауту через `types.HttpOptions(timeout=...)`
+- Retry с exponential backoff (3 попытки) для 429/500/503/timeout
+- `GenerationError` с типами: safety_filter, overloaded, timeout
+
+---
+
+## Следующий этап — Деплой на VPS + разделение prod/beta
+
+### Схема работы
+
+```
+VPS (production)                    Локальная машина (beta/dev)
+─────────────────                   ──────────────────────────
+branch: main                        branch: feature-*, fix-*
+bot token: PROD_BOT_TOKEN           bot token: BETA_BOT_TOKEN
+├── ~/bots/nano_characters/         Локальный запуск python bot.py
+│   ├── .env (prod token)           .env (beta token)
+│   └── ...
+└── systemd: nano-characters.service
+```
+
+**Два отдельных бота в Telegram** (два токена от @BotFather):
+- **Prod-бот** — работает на VPS, ветка `main`, основной токен
+- **Beta-бот** — работает локально, любая ветка, отдельный токен
+
+Это исключает конфликты: два процесса с одним токеном вызывают ошибку Telegram API (409 Conflict).
+
+### Важно: на VPS уже есть другие боты
+
+- НЕ трогать существующие сервисы и папки
+- Создать отдельную директорию (например `~/bots/nano_characters/`)
+- Создать отдельный systemd unit `nano-characters.service`
+- Для настройки использовать существующий сервис-файл другого бота как образец (попросить у пользователя)
+
+### Шаги деплоя
+
+1. **Создать prod-бота** в @BotFather → получить токен
+2. **На VPS:**
+   - `mkdir -p ~/bots/nano_characters`
+   - `git clone <repo> ~/bots/nano_characters`
+   - Создать venv, установить зависимости
+   - Создать `.env` с prod-токеном и `GOOGLE_API_KEY`
+3. **Systemd unit** `nano-characters.service`:
+   - `WorkingDirectory=~/bots/nano_characters`
+   - `ExecStart=` с путём к venv python
+   - `Restart=on-failure`
+   - Включить и запустить: `systemctl enable --now nano-characters`
+4. **Обновление prod:** `git pull && systemctl restart nano-characters`
+5. **Локально:** `.env` с beta-токеном, работа на любых ветках
+
+### Git workflow
+
+```
+main ← только проверенный код, автоматически на VPS
+  ↑
+feature-* / fix-* ← разработка локально с beta-ботом
+```
+
+---
+
+## Бэклог
+
+- ❌ Транскрипция голосовых через Gemini Audio
+- ❌ Персистентность сессий между перезапусками (картинки, промпты — сейчас in-memory)
 - ❌ A/B тест качества промптов Gemini Flash vs Claude Haiku
+- ❌ Скрипт автодеплоя (git hook или GitHub Actions → SSH → pull + restart)
 
 ---
 
