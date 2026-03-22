@@ -12,16 +12,25 @@ IMAGE_MODELS = {
     "fast": {
         "model": "gemini-2.5-flash-image",
         "count": 4,
+        "image_size": "1K",
+        "grid": False,
+        "timeout": 300_000,
         "label": "Nano Banana (быстрая)",
     },
     "pro": {
-        "model": "gemini-3.0-pro-image",
-        "count": 2,
+        "model": "gemini-3-pro-image-preview",
+        "count": 4,
+        "image_size": "2K",
+        "grid": True,           # grid 2x2 при 2K — каждая картинка ~1K
+        "timeout": 300_000,
         "label": "Nano Banana Pro",
     },
     "quality": {
         "model": "gemini-3.1-flash-image-preview",
-        "count": 2,
+        "count": 4,
+        "image_size": "2K",
+        "grid": True,           # grid 2x2 при 2K — каждая картинка ~1K
+        "timeout": 300_000,
         "label": "Nano Banana 2 (качество)",
     },
 }

@@ -1,3 +1,4 @@
+import asyncio
 import re
 import time
 import logging
@@ -167,6 +168,9 @@ async def _generate_more(chat_id: int, session, context: ContextTypes.DEFAULT_TY
             session.sketch_bytes,
             count=2,
             model=info["model"],
+            image_size=info["image_size"],
+
+            timeout_ms=info["timeout"],
         )
     except GenerationError as e:
         await context.bot.send_message(chat_id, _error_message(e))
@@ -235,24 +239,38 @@ async def _edit_prompt(chat_id: int, session, edits: str, context: ContextTypes.
 
 # ---------- Выбор вариантов (inline-кнопки) ----------
 
+async def _send_variant(bot, chat_id: int, image_bytes: bytes, n: int) -> None:
+    """Фоновая отправка одного варианта."""
+    try:
+        await bot.send_chat_action(chat_id, ChatAction.UPLOAD_DOCUMENT)
+        await bot.send_document(
+            chat_id,
+            document=image_bytes,
+            filename=f"variant_{n}.jpg",
+        )
+    except Exception:
+        logger.exception("Ошибка отправки варианта %d", n)
+        try:
+            await bot.send_message(chat_id, f"Не удалось отправить вариант {n}. Попробуйте ещё раз.")
+        except Exception:
+            pass
+
+
 async def callback_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    await query.answer()
+
     chat_id = update.effective_chat.id
     session = get_session(chat_id)
 
     n = int(query.data.split(":", 1)[1])
 
     if not session.images or n < 1 or n > len(session.images):
-        await query.answer("Вариант не найден")
+        await context.bot.send_message(chat_id, "Вариант не найден")
         return
 
-    await query.answer(f"Отправляю вариант {n}...")
-    await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_DOCUMENT)
-    await context.bot.send_document(
-        chat_id,
-        document=session.images[n - 1],
-        filename=f"variant_{n}.jpg",
-    )
+    # Отправляем в фоне — хэндлер завершается мгновенно, следующий callback обрабатывается сразу
+    asyncio.create_task(_send_variant(context.bot, chat_id, session.images[n - 1], n))
 
 
 # ---------- Полный пайплайн ----------
@@ -281,7 +299,15 @@ async def _run_full_pipeline(chat_id: int, sketch: bytes, caption: str, ref_imag
     await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
 
     try:
-        images = await generate_images(prompt, sketch, count=info["count"], model=info["model"])
+        images = await generate_images(
+            prompt, sketch,
+            count=info["count"],
+            model=info["model"],
+            image_size=info["image_size"],
+
+            grid=info.get("grid", False),
+            timeout_ms=info["timeout"],
+        )
     except GenerationError as e:
         await context.bot.send_message(chat_id, _error_message(e))
         return

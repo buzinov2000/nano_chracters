@@ -8,7 +8,10 @@ from config import GOOGLE_API_KEY, PROMPT_AGENT_MODEL
 
 logger = logging.getLogger(__name__)
 
-client = genai.Client(api_key=GOOGLE_API_KEY)
+client = genai.Client(
+    api_key=GOOGLE_API_KEY,
+    http_options=types.HttpOptions(timeout=60_000),  # 60 сек для промпт-агента
+)
 
 _system_prompt: str | None = None
 
