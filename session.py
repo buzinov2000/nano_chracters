@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
-from datetime import datetime
+
+from config import DEFAULT_IMAGE_MODE
 
 
 @dataclass
@@ -10,6 +11,8 @@ class Session:
     suggestions: list[str] = field(default_factory=list)
     images: list[bytes] = field(default_factory=list)
     history: list[dict] = field(default_factory=list)
+    image_mode: str = DEFAULT_IMAGE_MODE
+    awaiting_prompt_edit: bool = False
 
 
 _sessions: dict[int, Session] = {}
