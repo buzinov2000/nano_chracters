@@ -25,8 +25,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SELECT_PATTERN = re.compile(r"^\d+(\s+\d+)*$")
-
 _media_group_buffer: dict[str, dict] = {}
 MEDIA_GROUP_DELAY = 1.5
 
@@ -38,7 +36,8 @@ ERROR_MESSAGES = {
 
 BOT_COMMANDS = [
     BotCommand("start", "Начать заново"),
-    BotCommand("prompt", "Показать / редактировать промпт"),
+    BotCommand("prompt", "Показать текущий промпт"),
+    BotCommand("prompt_edit", "Редактировать промпт"),
     BotCommand("model", "Переключить модель генерации"),
     BotCommand("more", "Сгенерировать ещё 2 варианта"),
 ]
@@ -51,6 +50,15 @@ async def post_init(application) -> None:
 
 def _error_message(e: GenerationError) -> str:
     return ERROR_MESSAGES.get(str(e), "Не удалось сгенерировать. Попробуйте ещё раз.")
+
+
+def _pick_keyboard(count: int, extra_buttons: list | None = None) -> InlineKeyboardMarkup:
+    """Inline-кнопки с номерами вариантов + опциональные доп. кнопки."""
+    number_row = [InlineKeyboardButton(str(i + 1), callback_data=f"pick:{i + 1}") for i in range(count)]
+    rows = [number_row]
+    if extra_buttons:
+        rows.append(extra_buttons)
+    return InlineKeyboardMarkup(rows)
 
 
 # ---------- /start, /старт ----------
@@ -66,9 +74,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Что я умею:\n"
         "• Отправь скетч с подписью-гипотезой → сгенерирую промпт и варианты\n"
         "• Можно отправить несколько фото: первое — скетч, остальные — рефы\n"
-        "• Напиши номера вариантов (например: 1 3) → получишь в полном разрешении\n\n"
+        "• Нажми кнопку с номером под сеткой → получишь в полном разрешении\n\n"
         "Команды:\n"
-        "/prompt — показать / редактировать промпт\n"
+        "/prompt — показать текущий промпт\n"
+        "/prompt_edit — редактировать промпт\n"
         "/model — переключить модель генерации\n"
         "/more — сгенерировать ещё 2 варианта\n"
         "/start — начать заново\n\n"
@@ -171,9 +180,8 @@ async def _generate_more(chat_id: int, session, context: ContextTypes.DEFAULT_TY
     grid = make_grid(session.images)
     elapsed = int(time.monotonic() - t0)
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Ещё 2 варианта", callback_data="more")],
-    ])
+    extra = [InlineKeyboardButton("Ещё 2 варианта", callback_data="more")]
+    keyboard = _pick_keyboard(len(session.images), extra_buttons=extra)
 
     await context.bot.send_photo(
         chat_id,
@@ -183,7 +191,7 @@ async def _generate_more(chat_id: int, session, context: ContextTypes.DEFAULT_TY
     )
 
 
-# ---------- /prompt, /промпт ----------
+# ---------- /prompt ----------
 
 async def cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
@@ -193,39 +201,21 @@ async def cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("Сначала отправьте скетч с гипотезой.")
         return
 
-    edits = " ".join(context.args) if context.args else ""
-
-    if not edits:
-        # Показать промпт + кнопка «Редактировать»
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Редактировать", callback_data="edit_prompt")],
-        ])
-        await update.message.reply_text(
-            f"Текущий промпт:\n\n{session.current_prompt}",
-            reply_markup=keyboard,
-        )
-        return
-
-    # Есть правки — сразу перегенерируем
-    await _edit_prompt(chat_id, session, edits, context)
+    await update.message.reply_text(f"Текущий промпт:\n\n{session.current_prompt}")
 
 
-async def callback_edit_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
+# ---------- /prompt_edit ----------
 
+async def cmd_prompt_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     session = get_session(chat_id)
 
     if not session.current_prompt:
-        await query.edit_message_text("Сессия устарела. Отправьте скетч заново.")
+        await update.message.reply_text("Сначала отправьте скетч с гипотезой.")
         return
 
     session.awaiting_prompt_edit = True
-    await query.edit_message_text(
-        f"Текущий промпт:\n\n{session.current_prompt}\n\n"
-        "Напишите правки следующим сообщением:"
-    )
+    await update.message.reply_text("Что нужно поправить в промпте? Напишите правки следующим сообщением:")
 
 
 async def _edit_prompt(chat_id: int, session, edits: str, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -240,6 +230,28 @@ async def _edit_prompt(chat_id: int, session, edits: str, context: ContextTypes.
         chat_id, session.sketch_bytes, edit_hypothesis,
         ref_images=session.ref_images or None,
         context=context,
+    )
+
+
+# ---------- Выбор вариантов (inline-кнопки) ----------
+
+async def callback_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    chat_id = update.effective_chat.id
+    session = get_session(chat_id)
+
+    n = int(query.data.split(":", 1)[1])
+
+    if not session.images or n < 1 or n > len(session.images):
+        await query.answer("Вариант не найден")
+        return
+
+    await query.answer(f"Отправляю вариант {n}...")
+    await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_DOCUMENT)
+    await context.bot.send_document(
+        chat_id,
+        document=session.images[n - 1],
+        filename=f"variant_{n}.jpg",
     )
 
 
@@ -282,12 +294,11 @@ async def _run_full_pipeline(chat_id: int, sketch: bytes, caption: str, ref_imag
     grid = make_grid(images)
     elapsed = int(time.monotonic() - t0)
 
-    # Кнопка «ещё 2» для моделей с count <= 2
-    keyboard = None
+    # Кнопки выбора + «ещё 2» для моделей с count <= 2
+    extra = None
     if info["count"] <= 2:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Ещё 2 варианта", callback_data="more")],
-        ])
+        extra = [InlineKeyboardButton("Ещё 2 варианта", callback_data="more")]
+    keyboard = _pick_keyboard(len(images), extra_buttons=extra)
 
     await context.bot.send_photo(
         chat_id,
@@ -299,7 +310,7 @@ async def _run_full_pipeline(chat_id: int, sketch: bytes, caption: str, ref_imag
     suggestions_text = "\n".join(f"• {s}" for s in suggestions)
     await context.bot.send_message(
         chat_id,
-        f"Отправьте номера понравившихся вариантов (например: 1 3)\n\nПодсказки:\n{suggestions_text}",
+        f"Подсказки:\n{suggestions_text}",
     )
 
 
@@ -390,43 +401,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await cmd_start(update, context)
         return
 
-    if text.startswith("/промпт"):
-        if not session.current_prompt:
-            await update.message.reply_text("Сначала отправьте скетч с гипотезой.")
-            return
-
-        edits = text[len("/промпт"):].strip()
-
-        if not edits:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Редактировать", callback_data="edit_prompt")],
-            ])
-            await update.message.reply_text(
-                f"Текущий промпт:\n\n{session.current_prompt}",
-                reply_markup=keyboard,
-            )
-            return
-
-        await _edit_prompt(chat_id, session, edits, context)
-        return
-
-    # Выбор вариантов по номерам
-    if SELECT_PATTERN.match(text.strip()):
-        if not session.images:
-            await update.message.reply_text("Сначала отправьте скетч с гипотезой.")
-            return
-
-        await update.message.reply_chat_action(ChatAction.UPLOAD_DOCUMENT)
-
-        nums = [int(n) for n in text.strip().split()]
-        for n in nums:
-            if 1 <= n <= len(session.images):
-                await update.message.reply_document(
-                    document=session.images[n - 1],
-                    filename=f"variant_{n}.jpg",
-                )
-            else:
-                await update.message.reply_text(f"Вариант {n} не найден (доступны 1–{len(session.images)})")
+    if text.strip() == "/промпт":
+        await cmd_prompt(update, context)
         return
 
     await update.message.reply_text(
@@ -465,13 +441,14 @@ def main() -> None:
     # Латинские команды
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("prompt", cmd_prompt))
+    app.add_handler(CommandHandler("prompt_edit", cmd_prompt_edit))
     app.add_handler(CommandHandler("model", cmd_model))
     app.add_handler(CommandHandler("more", cmd_more))
 
     # Inline-кнопки
     app.add_handler(CallbackQueryHandler(callback_model, pattern=r"^model:"))
     app.add_handler(CallbackQueryHandler(callback_more, pattern=r"^more$"))
-    app.add_handler(CallbackQueryHandler(callback_edit_prompt, pattern=r"^edit_prompt$"))
+    app.add_handler(CallbackQueryHandler(callback_pick, pattern=r"^pick:\d+$"))
 
     # Фото и текст
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
