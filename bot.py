@@ -82,9 +82,10 @@ def _pick_keyboard(count: int, extra_buttons: list | None = None) -> InlineKeybo
 
 @authorized
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    reset_session(chat_id)
-    session = get_session(chat_id)
+    reset_session(user_id)
+    session = get_session(user_id)
     mode_info = IMAGE_MODELS[session.image_mode]
 
     await update.message.reply_text(
@@ -118,8 +119,8 @@ def _model_keyboard(current_mode: str) -> InlineKeyboardMarkup:
 
 @authorized
 async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    session = get_session(chat_id)
+    user_id = update.effective_user.id
+    session = get_session(user_id)
 
     await update.message.reply_text(
         "Выберите модель генерации:",
@@ -136,8 +137,8 @@ async def callback_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if mode not in IMAGE_MODELS:
         return
 
-    chat_id = update.effective_chat.id
-    session = get_session(chat_id)
+    user_id = update.effective_user.id
+    session = get_session(user_id)
     session.image_mode = mode
     await save_default_model(mode)
     info = IMAGE_MODELS[mode]
@@ -151,14 +152,15 @@ async def callback_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @authorized
 async def cmd_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    session = get_session(chat_id)
+    session = get_session(user_id)
 
     if not session.current_prompt:
         await update.message.reply_text("Сначала отправьте скетч с гипотезой.")
         return
 
-    await _generate_more(chat_id, session, context)
+    await _generate_more(chat_id, user_id, session, context)
 
 
 @authorized
@@ -166,17 +168,18 @@ async def callback_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     query = update.callback_query
     await query.answer()
 
+    user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    session = get_session(chat_id)
+    session = get_session(user_id)
 
     if not session.current_prompt:
         await query.edit_message_text("Сессия устарела. Отправьте скетч заново.")
         return
 
-    await _generate_more(chat_id, session, context)
+    await _generate_more(chat_id, user_id, session, context)
 
 
-async def _generate_more(chat_id: int, session, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _generate_more(chat_id: int, user_id: int, session, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Проверка дневного лимита
     if not session.check_daily_limit(DAILY_LIMIT_PER_USER):
         await context.bot.send_message(
@@ -219,7 +222,7 @@ async def _generate_more(chat_id: int, session, context: ContextTypes.DEFAULT_TY
 
         logger.info(
             "generation user=%d model=%s mode=%s variants=%d time=%ds (more)",
-            chat_id, info["model"], session.image_mode, len(new_images), elapsed,
+            user_id, info["model"], session.image_mode, len(new_images), elapsed,
         )
 
         session.images.extend(new_images)
@@ -240,8 +243,8 @@ async def _generate_more(chat_id: int, session, context: ContextTypes.DEFAULT_TY
 
 @authorized
 async def cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    session = get_session(chat_id)
+    user_id = update.effective_user.id
+    session = get_session(user_id)
 
     if not session.current_prompt:
         await update.message.reply_text("Сначала отправьте скетч с гипотезой.")
@@ -254,8 +257,8 @@ async def cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 @authorized
 async def cmd_prompt_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    session = get_session(chat_id)
+    user_id = update.effective_user.id
+    session = get_session(user_id)
 
     if not session.current_prompt:
         await update.message.reply_text("Сначала отправьте скетч с гипотезой.")
@@ -265,7 +268,7 @@ async def cmd_prompt_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("Что нужно поправить в промпте? Напишите правки следующим сообщением:")
 
 
-async def _edit_prompt(chat_id: int, session, edits: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _edit_prompt(chat_id: int, user_id: int, session, edits: str, context: ContextTypes.DEFAULT_TYPE) -> None:
     if session.lock.locked():
         await context.bot.send_message(chat_id, "⏳ Предыдущая генерация ещё идёт, подождите.")
         return
@@ -278,7 +281,7 @@ async def _edit_prompt(chat_id: int, session, edits: str, context: ContextTypes.
         f"Обнови промпт соответственно."
     )
     await _run_full_pipeline(
-        chat_id, session.sketch_bytes, edit_hypothesis,
+        chat_id, user_id, session.sketch_bytes, edit_hypothesis,
         ref_images=session.ref_images or None,
         context=context,
     )
@@ -308,8 +311,9 @@ async def callback_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     query = update.callback_query
     await query.answer()
 
+    user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    session = get_session(chat_id)
+    session = get_session(user_id)
 
     n = int(query.data.split(":", 1)[1])
 
@@ -323,8 +327,8 @@ async def callback_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ---------- Полный пайплайн ----------
 
-async def _run_full_pipeline(chat_id: int, sketch: bytes, caption: str, ref_images: list[bytes] | None, context: ContextTypes.DEFAULT_TYPE) -> None:
-    session = get_session(chat_id)
+async def _run_full_pipeline(chat_id: int, user_id: int, sketch: bytes, caption: str, ref_images: list[bytes] | None, context: ContextTypes.DEFAULT_TYPE) -> None:
+    session = get_session(user_id)
 
     # Проверка дневного лимита
     if not session.check_daily_limit(DAILY_LIMIT_PER_USER):
@@ -382,7 +386,7 @@ async def _run_full_pipeline(chat_id: int, sketch: bytes, caption: str, ref_imag
 
         logger.info(
             "generation user=%d model=%s mode=%s variants=%d time=%ds",
-            chat_id, info["model"], session.image_mode, len(images), elapsed,
+            user_id, info["model"], session.image_mode, len(images), elapsed,
         )
 
         session.images = images
@@ -410,8 +414,8 @@ async def _run_full_pipeline(chat_id: int, sketch: bytes, caption: str, ref_imag
 
 # ---------- Фото ----------
 
-async def _process_photos(chat_id: int, photos: list[bytes], caption: str, context: ContextTypes.DEFAULT_TYPE) -> None:
-    session = get_session(chat_id)
+async def _process_photos(chat_id: int, user_id: int, photos: list[bytes], caption: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+    session = get_session(user_id)
 
     # Проверка lock ДО сохранения скетча — чтобы не перезаписать данные во время генерации
     if session.lock.locked():
@@ -433,7 +437,7 @@ async def _process_photos(chat_id: int, photos: list[bytes], caption: str, conte
     await context.bot.send_message(chat_id, f"Получил скетч{ref_note}. Генерирую промпт...")
 
     await _run_full_pipeline(
-        chat_id, photos[0], caption,
+        chat_id, user_id, photos[0], caption,
         ref_images=session.ref_images or None,
         context=context,
     )
@@ -447,11 +451,12 @@ async def _process_media_group(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not buf:
         return
 
-    await _process_photos(buf["chat_id"], buf["photos"], buf["caption"], context)
+    await _process_photos(buf["chat_id"], buf["user_id"], buf["photos"], buf["caption"], context)
 
 
 @authorized
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
     photo = update.message.photo[-1]
@@ -464,6 +469,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if media_group_id not in _media_group_buffer:
             _media_group_buffer[media_group_id] = {
                 "chat_id": chat_id,
+                "user_id": user_id,
                 "photos": [],
                 "caption": update.message.caption or "",
             }
@@ -479,7 +485,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         _media_group_buffer[media_group_id]["photos"].append(photo_bytes)
     else:
         caption = update.message.caption or ""
-        await _process_photos(chat_id, [photo_bytes], caption, context)
+        await _process_photos(chat_id, user_id, [photo_bytes], caption, context)
 
 
 # ---------- Текст ----------
@@ -487,14 +493,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 @authorized
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or ""
+    user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    session = get_session(chat_id)
+    session = get_session(user_id)
 
     # Если ждём правки промпта
     if session.awaiting_prompt_edit:
         session.awaiting_prompt_edit = False
         if session.current_prompt:
-            await _edit_prompt(chat_id, session, text, context)
+            await _edit_prompt(chat_id, user_id, session, text, context)
             return
 
     # Кириллические алиасы
