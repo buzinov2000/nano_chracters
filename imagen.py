@@ -6,9 +6,11 @@ from google import genai
 from google.genai import types
 from PIL import Image
 
-from config import GOOGLE_API_KEY, IMAGE_MODELS
+from config import GOOGLE_API_KEY, IMAGE_MODELS, MAX_CONCURRENT_API_CALLS
 
 logger = logging.getLogger(__name__)
+
+_semaphore = asyncio.Semaphore(MAX_CONCURRENT_API_CALLS)
 
 _clients: dict[int, genai.Client] = {}
 
@@ -77,11 +79,12 @@ async def _generate_single(
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = await client.aio.models.generate_content(
-                model=model,
-                contents=[types.Content(role="user", parts=parts)],
-                config=config,
-            )
+            async with _semaphore:
+                response = await client.aio.models.generate_content(
+                    model=model,
+                    contents=[types.Content(role="user", parts=parts)],
+                    config=config,
+                )
 
             if not response.candidates:
                 logger.warning("Генерация заблокирована фильтрами (нет candidates)")

@@ -2,6 +2,7 @@ import asyncio
 import re
 import time
 import logging
+from functools import wraps
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.constants import ChatAction
@@ -14,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import TELEGRAM_BOT_TOKEN, IMAGE_MODELS
+from config import TELEGRAM_BOT_TOKEN, IMAGE_MODELS, ALLOWED_USERS, DAILY_LIMIT_PER_USER
 from session import get_session, reset_session, save_default_model
 from agent import generate_prompt
 from imagen import generate_images, GenerationError
@@ -53,6 +54,21 @@ def _error_message(e: GenerationError) -> str:
     return ERROR_MESSAGES.get(str(e), "Не удалось сгенерировать. Попробуйте ещё раз.")
 
 
+def authorized(func):
+    """Проверка доступа по whitelist. Если ALLOWED_USERS пуст — пропускает всех."""
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        if ALLOWED_USERS and (not user or user.id not in ALLOWED_USERS):
+            if update.message:
+                await update.message.reply_text("⛔ Доступ ограничен.")
+            elif update.callback_query:
+                await update.callback_query.answer("⛔ Доступ ограничен.", show_alert=True)
+            return
+        return await func(update, context)
+    return wrapper
+
+
 def _pick_keyboard(count: int, extra_buttons: list | None = None) -> InlineKeyboardMarkup:
     """Inline-кнопки с номерами вариантов + опциональные доп. кнопки."""
     number_row = [InlineKeyboardButton(str(i + 1), callback_data=f"pick:{i + 1}") for i in range(count)]
@@ -64,6 +80,7 @@ def _pick_keyboard(count: int, extra_buttons: list | None = None) -> InlineKeybo
 
 # ---------- /start, /старт ----------
 
+@authorized
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     reset_session(chat_id)
@@ -99,6 +116,7 @@ def _model_keyboard(current_mode: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+@authorized
 async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     session = get_session(chat_id)
@@ -109,6 +127,7 @@ async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+@authorized
 async def callback_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -120,7 +139,7 @@ async def callback_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = update.effective_chat.id
     session = get_session(chat_id)
     session.image_mode = mode
-    save_default_model(mode)
+    await save_default_model(mode)
     info = IMAGE_MODELS[mode]
 
     await query.edit_message_text(
@@ -130,6 +149,7 @@ async def callback_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # ---------- /more ----------
 
+@authorized
 async def cmd_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     session = get_session(chat_id)
@@ -141,6 +161,7 @@ async def cmd_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _generate_more(chat_id, session, context)
 
 
+@authorized
 async def callback_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -156,48 +177,68 @@ async def callback_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def _generate_more(chat_id: int, session, context: ContextTypes.DEFAULT_TYPE) -> None:
-    info = IMAGE_MODELS[session.image_mode]
-
-    await context.bot.send_message(chat_id, "Генерирую ещё 2 варианта...")
-    await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
-
-    t0 = time.monotonic()
-
-    try:
-        new_images = await generate_images(
-            session.current_prompt,
-            session.sketch_bytes,
-            count=2,
-            model=info["model"],
-            image_size=info["image_size"],
-
-            timeout_ms=info["timeout"],
+    # Проверка дневного лимита
+    if not session.check_daily_limit(DAILY_LIMIT_PER_USER):
+        await context.bot.send_message(
+            chat_id,
+            f"⚠️ Дневной лимит ({DAILY_LIMIT_PER_USER} генераций) исчерпан. Сброс в полночь.",
         )
-    except GenerationError as e:
-        await context.bot.send_message(chat_id, _error_message(e))
         return
 
-    if not new_images:
-        await context.bot.send_message(chat_id, "Не удалось сгенерировать. Попробуйте ещё раз.")
+    # Lock на сессию
+    if session.lock.locked():
+        await context.bot.send_message(chat_id, "⏳ Предыдущая генерация ещё идёт, подождите.")
         return
 
-    session.images.extend(new_images)
-    grid = make_grid(session.images)
-    elapsed = int(time.monotonic() - t0)
+    async with session.lock:
+        info = IMAGE_MODELS[session.image_mode]
 
-    extra = [InlineKeyboardButton("Ещё 2 варианта", callback_data="more")]
-    keyboard = _pick_keyboard(len(session.images), extra_buttons=extra)
+        await context.bot.send_message(chat_id, "Генерирую ещё 2 варианта...")
+        await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
 
-    await context.bot.send_photo(
-        chat_id,
-        photo=grid,
-        caption=f"Добавлено {len(new_images)} вариантов (всего {len(session.images)}) за {elapsed} сек",
-        reply_markup=keyboard,
-    )
+        t0 = time.monotonic()
+
+        try:
+            new_images = await generate_images(
+                session.current_prompt,
+                session.sketch_bytes,
+                count=2,
+                model=info["model"],
+                image_size=info["image_size"],
+                timeout_ms=info["timeout"],
+            )
+        except GenerationError as e:
+            await context.bot.send_message(chat_id, _error_message(e))
+            return
+
+        if not new_images:
+            await context.bot.send_message(chat_id, "Не удалось сгенерировать. Попробуйте ещё раз.")
+            return
+
+        elapsed = int(time.monotonic() - t0)
+
+        logger.info(
+            "generation user=%d model=%s mode=%s variants=%d time=%ds (more)",
+            chat_id, info["model"], session.image_mode, len(new_images), elapsed,
+        )
+
+        session.images.extend(new_images)
+        grid = make_grid(session.images)
+
+        extra = [InlineKeyboardButton("Ещё 2 варианта", callback_data="more")]
+        keyboard = _pick_keyboard(len(session.images), extra_buttons=extra)
+
+        await context.bot.send_photo(
+            chat_id,
+            photo=grid,
+            caption=f"Добавлено {len(new_images)} вариантов (всего {len(session.images)}) за {elapsed} сек",
+            reply_markup=keyboard,
+        )
 
 
 # ---------- /prompt ----------
 
+@authorized
 async def cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     session = get_session(chat_id)
@@ -211,6 +252,7 @@ async def cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 # ---------- /prompt_edit ----------
 
+@authorized
 async def cmd_prompt_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     session = get_session(chat_id)
@@ -224,6 +266,10 @@ async def cmd_prompt_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _edit_prompt(chat_id: int, session, edits: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if session.lock.locked():
+        await context.bot.send_message(chat_id, "⏳ Предыдущая генерация ещё идёт, подождите.")
+        return
+
     await context.bot.send_message(chat_id, "Обновляю промпт...")
 
     edit_hypothesis = (
@@ -257,6 +303,7 @@ async def _send_variant(bot, chat_id: int, image_bytes: bytes, n: int) -> None:
             pass
 
 
+@authorized
 async def callback_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -278,73 +325,98 @@ async def callback_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def _run_full_pipeline(chat_id: int, sketch: bytes, caption: str, ref_images: list[bytes] | None, context: ContextTypes.DEFAULT_TYPE) -> None:
     session = get_session(chat_id)
-    info = IMAGE_MODELS[session.image_mode]
-    t0 = time.monotonic()
 
-    await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
-
-    try:
-        prompt, suggestions = await generate_prompt(sketch, caption, ref_images=ref_images, grid=info.get("grid", False))
-    except Exception:
-        logger.exception("Ошибка генерации промпта")
-        await context.bot.send_message(chat_id, "Не удалось сгенерировать промпт. Попробуйте ещё раз.")
-        return
-
-    session.current_prompt = prompt
-    session.suggestions = suggestions
-
-    await context.bot.send_message(
-        chat_id,
-        f"Промпт готов. Генерирую {info['count']} вариантов ({info['label']})...",
-    )
-    await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
-
-    try:
-        images = await generate_images(
-            prompt, sketch,
-            count=info["count"],
-            model=info["model"],
-            image_size=info["image_size"],
-
-            grid=info.get("grid", False),
-            timeout_ms=info["timeout"],
+    # Проверка дневного лимита
+    if not session.check_daily_limit(DAILY_LIMIT_PER_USER):
+        await context.bot.send_message(
+            chat_id,
+            f"⚠️ Дневной лимит ({DAILY_LIMIT_PER_USER} генераций) исчерпан. Сброс в полночь.",
         )
-    except GenerationError as e:
-        await context.bot.send_message(chat_id, _error_message(e))
         return
 
-    if not images:
-        await context.bot.send_message(chat_id, "Не удалось сгенерировать картинки. Попробуйте ещё раз.")
+    # Lock на сессию — не запускать параллельные генерации
+    if session.lock.locked():
+        await context.bot.send_message(chat_id, "⏳ Предыдущая генерация ещё идёт, подождите.")
         return
 
-    session.images = images
-    grid = make_grid(images)
-    elapsed = int(time.monotonic() - t0)
+    async with session.lock:
+        info = IMAGE_MODELS[session.image_mode]
+        t0 = time.monotonic()
 
-    # Кнопки выбора + «ещё 2» для моделей с count <= 2
-    extra = None
-    if info["count"] <= 2:
-        extra = [InlineKeyboardButton("Ещё 2 варианта", callback_data="more")]
-    keyboard = _pick_keyboard(len(images), extra_buttons=extra)
+        await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
 
-    await context.bot.send_photo(
-        chat_id,
-        photo=grid,
-        caption=f"Сгенерировано {len(images)} вариантов за {elapsed} сек ({info['label']})",
-        reply_markup=keyboard,
-    )
+        try:
+            prompt, suggestions = await generate_prompt(sketch, caption, ref_images=ref_images, grid=info.get("grid", False))
+        except Exception:
+            logger.exception("Ошибка генерации промпта")
+            await context.bot.send_message(chat_id, "Не удалось сгенерировать промпт. Попробуйте ещё раз.")
+            return
 
-    suggestions_text = "\n".join(f"• {s}" for s in suggestions)
-    await context.bot.send_message(
-        chat_id,
-        f"Подсказки:\n{suggestions_text}",
-    )
+        session.current_prompt = prompt
+        session.suggestions = suggestions
+
+        await context.bot.send_message(
+            chat_id,
+            f"Промпт готов. Генерирую {info['count']} вариантов ({info['label']})...",
+        )
+        await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
+
+        try:
+            images = await generate_images(
+                prompt, sketch,
+                count=info["count"],
+                model=info["model"],
+                image_size=info["image_size"],
+                grid=info.get("grid", False),
+                timeout_ms=info["timeout"],
+            )
+        except GenerationError as e:
+            await context.bot.send_message(chat_id, _error_message(e))
+            return
+
+        if not images:
+            await context.bot.send_message(chat_id, "Не удалось сгенерировать картинки. Попробуйте ещё раз.")
+            return
+
+        elapsed = int(time.monotonic() - t0)
+
+        logger.info(
+            "generation user=%d model=%s mode=%s variants=%d time=%ds",
+            chat_id, info["model"], session.image_mode, len(images), elapsed,
+        )
+
+        session.images = images
+        grid = make_grid(images)
+
+        # Кнопки выбора + «ещё 2» для моделей с count <= 2
+        extra = None
+        if info["count"] <= 2:
+            extra = [InlineKeyboardButton("Ещё 2 варианта", callback_data="more")]
+        keyboard = _pick_keyboard(len(images), extra_buttons=extra)
+
+        await context.bot.send_photo(
+            chat_id,
+            photo=grid,
+            caption=f"Сгенерировано {len(images)} вариантов за {elapsed} сек ({info['label']})",
+            reply_markup=keyboard,
+        )
+
+        suggestions_text = "\n".join(f"• {s}" for s in suggestions)
+        await context.bot.send_message(
+            chat_id,
+            f"Подсказки:\n{suggestions_text}",
+        )
 
 
 # ---------- Фото ----------
 
 async def _process_photos(chat_id: int, photos: list[bytes], caption: str, context: ContextTypes.DEFAULT_TYPE) -> None:
     session = get_session(chat_id)
+
+    # Проверка lock ДО сохранения скетча — чтобы не перезаписать данные во время генерации
+    if session.lock.locked():
+        await context.bot.send_message(chat_id, "⏳ Предыдущая генерация ещё идёт, подождите.")
+        return
 
     session.sketch_bytes = photos[0]
     session.ref_images = photos[1:] if len(photos) > 1 else []
@@ -378,6 +450,7 @@ async def _process_media_group(context: ContextTypes.DEFAULT_TYPE) -> None:
     await _process_photos(buf["chat_id"], buf["photos"], buf["caption"], context)
 
 
+@authorized
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
 
@@ -411,6 +484,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 # ---------- Текст ----------
 
+@authorized
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or ""
     chat_id = update.effective_chat.id
@@ -461,6 +535,7 @@ def main() -> None:
         .read_timeout(60)
         .write_timeout(60)
         .connect_timeout(30)
+        .concurrent_updates(True)
         .post_init(post_init)
         .build()
     )

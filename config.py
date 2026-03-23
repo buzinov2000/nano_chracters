@@ -37,3 +37,15 @@ IMAGE_MODELS = {
 
 DEFAULT_IMAGE_MODE = "fast"
 USER_DATA_FILE = "user_data.json"
+
+# Параллельность
+MAX_CONCURRENT_API_CALLS = 8  # максимум одновременных вызовов к Image API
+
+# Whitelist (пустой = открыт для всех)
+ALLOWED_USERS: set[int] = set()
+_raw = os.getenv("ALLOWED_USERS", "")
+if _raw:
+    ALLOWED_USERS = {int(uid.strip()) for uid in _raw.split(",") if uid.strip()}
+
+# Rate limiting
+DAILY_LIMIT_PER_USER = int(os.getenv("DAILY_LIMIT_PER_USER", "50"))
