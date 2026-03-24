@@ -77,14 +77,14 @@ class StatusMessage:
             self._task.cancel()
         if self._message:
             try:
-                await self._message.edit_text(text)
+                await self._message.edit_text(text, parse_mode="Markdown")
             except Exception:
                 pass
 
 ERROR_MESSAGES = {
-    "safety_filter": "Генерация заблокирована фильтрами безопасности. Попробуйте переформулировать гипотезу.",
-    "overloaded": "Модель перегружена запросами. Попробуйте через пару минут или переключите модель через /model.",
-    "timeout": "Сервер не ответил вовремя. Попробуйте ещё раз или переключите модель через /model.",
+    "safety_filter": "`фильтр: текст — переформулируй`",
+    "overloaded": "`сервер перегружен — попробуй позже`",
+    "timeout": "`сервер не ответил — ещё раз?`",
 }
 
 BOT_COMMANDS = [
@@ -102,7 +102,7 @@ async def post_init(application) -> None:
 
 
 def _error_message(e: GenerationError) -> str:
-    return ERROR_MESSAGES.get(str(e), "Не удалось сгенерировать. Попробуйте ещё раз.")
+    return ERROR_MESSAGES.get(str(e), "`генерация не удалась — ещё раз?`")
 
 
 def authorized(func):
@@ -120,12 +120,15 @@ def authorized(func):
     return wrapper
 
 
-def _pick_keyboard(count: int, extra_buttons: list | None = None) -> InlineKeyboardMarkup:
-    """Inline-кнопки с номерами вариантов + опциональные доп. кнопки."""
+def _pick_keyboard(count: int, extra_buttons: list | None = None, suggestions: list[str] | None = None) -> InlineKeyboardMarkup:
+    """Inline-кнопки с номерами вариантов + опциональные доп. кнопки + подсказки."""
     number_row = [InlineKeyboardButton(str(i + 1), callback_data=f"pick:{i + 1}") for i in range(count)]
     rows = [number_row]
     if extra_buttons:
         rows.append(extra_buttons)
+    if suggestions:
+        for i, s in enumerate(suggestions[:3]):
+            rows.append([InlineKeyboardButton(s, callback_data=f"suggest:{i}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -139,20 +142,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     session = get_session(user_id)
     mode_info = IMAGE_MODELS[session.image_mode]
 
-    await update.message.reply_text(
-        "Привет! Я бот-курьер для пайплайна персонажей.\n\n"
-        "Что я умею:\n"
-        "• Отправь скетч с подписью-гипотезой → сгенерирую промпт и варианты\n"
-        "• Можно отправить несколько фото: первое — скетч, остальные — рефы\n"
-        "• Нажми кнопку с номером под сеткой → получишь в полном разрешении\n\n"
-        "Команды:\n"
-        "/prompt — показать текущий промпт\n"
-        "/prompt_edit — редактировать промпт\n"
-        "/model — переключить модель генерации\n"
-        "/more — сгенерировать ещё 2 варианта\n"
-        "/start — начать заново\n\n"
-        f"Текущая модель: {mode_info['label']} ({mode_info['count']} шт)"
-    )
+    await update.message.reply_text("🌱 новый проект")
 
 
 # ---------- /model ----------
@@ -208,7 +198,7 @@ async def cmd_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     session = get_session(user_id)
 
     if not session.current_prompt:
-        await update.message.reply_text("Сначала отправьте скетч с гипотезой.")
+        await update.message.reply_text("`сессия пуста — отправь скетч`", parse_mode="Markdown")
         return
 
     await _generate_more(chat_id, user_id, session, context)
@@ -224,7 +214,7 @@ async def callback_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     session = get_session(user_id)
 
     if not session.current_prompt:
-        await query.edit_message_text("Сессия устарела. Отправьте скетч заново.")
+        await query.edit_message_text("`сессия пуста — отправь скетч`", parse_mode="Markdown")
         return
 
     await _generate_more(chat_id, user_id, session, context)
@@ -235,13 +225,13 @@ async def _generate_more(chat_id: int, user_id: int, session, context: ContextTy
     if not session.check_daily_limit(DAILY_LIMIT_PER_USER):
         await context.bot.send_message(
             chat_id,
-            f"⚠️ Дневной лимит ({DAILY_LIMIT_PER_USER} генераций) исчерпан. Сброс в полночь.",
+            "`лимит исчерпан — сброс в полночь`", parse_mode="Markdown",
         )
         return
 
     # Lock на сессию
     if session.lock.locked():
-        await context.bot.send_message(chat_id, "⏳ Предыдущая генерация ещё идёт, подождите.")
+        await context.bot.send_message(chat_id, "`генерация идёт — подожди`", parse_mode="Markdown")
         return
 
     async with session.lock:
@@ -267,7 +257,7 @@ async def _generate_more(chat_id: int, user_id: int, session, context: ContextTy
             return
 
         if not new_images:
-            await status.fail("Не удалось сгенерировать. Попробуйте ещё раз.")
+            await status.fail("`генерация не удалась — ещё раз?`")
             return
 
         elapsed = int(time.monotonic() - t0)
@@ -300,7 +290,7 @@ async def cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     session = get_session(user_id)
 
     if not session.current_prompt:
-        await update.message.reply_text("Сначала отправьте скетч с гипотезой.")
+        await update.message.reply_text("`сессия пуста — отправь скетч`", parse_mode="Markdown")
         return
 
     await update.message.reply_text(f"Текущий промпт:\n\n{session.current_prompt}")
@@ -314,7 +304,7 @@ async def cmd_prompt_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     session = get_session(user_id)
 
     if not session.current_prompt:
-        await update.message.reply_text("Сначала отправьте скетч с гипотезой.")
+        await update.message.reply_text("`сессия пуста — отправь скетч`", parse_mode="Markdown")
         return
 
     session.awaiting_prompt_edit = True
@@ -323,7 +313,7 @@ async def cmd_prompt_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def _edit_prompt(chat_id: int, user_id: int, session, edits: str, context: ContextTypes.DEFAULT_TYPE) -> None:
     if session.lock.locked():
-        await context.bot.send_message(chat_id, "⏳ Предыдущая генерация ещё идёт, подождите.")
+        await context.bot.send_message(chat_id, "`генерация идёт — подожди`", parse_mode="Markdown")
         return
 
     # Статус показывается внутри _run_full_pipeline
@@ -354,7 +344,7 @@ async def _send_variant(bot, chat_id: int, image_bytes: bytes, n: int) -> None:
     except Exception:
         logger.exception("Ошибка отправки варианта %d", n)
         try:
-            await bot.send_message(chat_id, f"Не удалось отправить вариант {n}. Попробуйте ещё раз.")
+            await bot.send_message(chat_id, "`не удалось отправить файл — ещё раз?`", parse_mode="Markdown")
         except Exception:
             pass
 
@@ -371,11 +361,39 @@ async def callback_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     n = int(query.data.split(":", 1)[1])
 
     if not session.images or n < 1 or n > len(session.images):
-        await context.bot.send_message(chat_id, "Вариант не найден")
+        await context.bot.send_message(chat_id, "`вариант не найден`", parse_mode="Markdown")
         return
 
     # Отправляем в фоне — хэндлер завершается мгновенно, следующий callback обрабатывается сразу
     asyncio.create_task(_send_variant(context.bot, chat_id, session.images[n - 1], n))
+
+
+@authorized
+async def callback_suggest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Подсказка-кнопка → новая итерация с текстом подсказки как гипотезой."""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    session = get_session(user_id)
+
+    idx = int(query.data.split(":", 1)[1])
+
+    if not session.sketch_bytes:
+        await context.bot.send_message(chat_id, "`сессия пуста — отправь скетч`", parse_mode="Markdown")
+        return
+
+    if not session.suggestions or idx >= len(session.suggestions):
+        return
+
+    suggestion = session.suggestions[idx]
+
+    await _run_full_pipeline(
+        chat_id, user_id, session.sketch_bytes, suggestion,
+        ref_images=session.ref_images or None,
+        context=context,
+    )
 
 
 # ---------- Полный пайплайн ----------
@@ -387,13 +405,13 @@ async def _run_full_pipeline(chat_id: int, user_id: int, sketch: bytes, caption:
     if not session.check_daily_limit(DAILY_LIMIT_PER_USER):
         await context.bot.send_message(
             chat_id,
-            f"⚠️ Дневной лимит ({DAILY_LIMIT_PER_USER} генераций) исчерпан. Сброс в полночь.",
+            "`лимит исчерпан — сброс в полночь`", parse_mode="Markdown",
         )
         return
 
     # Lock на сессию — не запускать параллельные генерации
     if session.lock.locked():
-        await context.bot.send_message(chat_id, "⏳ Предыдущая генерация ещё идёт, подождите.")
+        await context.bot.send_message(chat_id, "`генерация идёт — подожди`", parse_mode="Markdown")
         return
 
     async with session.lock:
@@ -407,7 +425,7 @@ async def _run_full_pipeline(chat_id: int, user_id: int, sketch: bytes, caption:
             prompt, suggestions = await generate_prompt(sketch, caption, ref_images=ref_images, grid=info.get("grid", False))
         except Exception:
             logger.exception("Ошибка генерации промпта")
-            await status.fail("Не удалось сгенерировать промпт. Попробуйте ещё раз.")
+            await status.fail("`промпт: ошибка — ещё раз?`")
             return
 
         session.current_prompt = prompt
@@ -429,7 +447,7 @@ async def _run_full_pipeline(chat_id: int, user_id: int, sketch: bytes, caption:
             return
 
         if not images:
-            await status.fail("Не удалось сгенерировать картинки. Попробуйте ещё раз.")
+            await status.fail("`генерация не удалась — ещё раз?`")
             return
 
         elapsed = int(time.monotonic() - t0)
@@ -446,7 +464,7 @@ async def _run_full_pipeline(chat_id: int, user_id: int, sketch: bytes, caption:
         extra = None
         if info["count"] <= 2:
             extra = [InlineKeyboardButton("Ещё 2 варианта", callback_data="more")]
-        keyboard = _pick_keyboard(len(images), extra_buttons=extra)
+        keyboard = _pick_keyboard(len(images), extra_buttons=extra, suggestions=suggestions)
 
         await status.done()
 
@@ -456,13 +474,6 @@ async def _run_full_pipeline(chat_id: int, user_id: int, sketch: bytes, caption:
             reply_markup=keyboard,
         )
 
-        if suggestions:
-            suggestions_text = "\n".join(f"• {s}" for s in suggestions)
-            await context.bot.send_message(
-                chat_id,
-                f"Подсказки:\n{suggestions_text}",
-            )
-
 
 # ---------- Фото ----------
 
@@ -471,7 +482,7 @@ async def _process_photos(chat_id: int, user_id: int, photos: list[bytes], capti
 
     # Проверка lock ДО сохранения скетча — чтобы не перезаписать данные во время генерации
     if session.lock.locked():
-        await context.bot.send_message(chat_id, "⏳ Предыдущая генерация ещё идёт, подождите.")
+        await context.bot.send_message(chat_id, "`генерация идёт — подожди`", parse_mode="Markdown")
         return
 
     session.sketch_bytes = photos[0]
@@ -568,9 +579,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await cmd_prompt(update, context)
         return
 
-    await update.message.reply_text(
-        "Отправьте скетч с описанием гипотезы"
-    )
+    await update.message.reply_text("`отправь скетч с гипотезой`", parse_mode="Markdown")
 
 
 # ---------- Ошибки ----------
@@ -582,7 +591,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             await context.bot.send_message(
                 update.effective_chat.id,
-                "Произошла ошибка. Попробуйте ещё раз или начните заново командой /start",
+                "`ошибка — попробуй /start`",
+                parse_mode="Markdown",
             )
         except Exception:
             logger.exception("Не удалось отправить сообщение об ошибке")
@@ -613,6 +623,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(callback_model, pattern=r"^model:"))
     app.add_handler(CallbackQueryHandler(callback_more, pattern=r"^more$"))
     app.add_handler(CallbackQueryHandler(callback_pick, pattern=r"^pick:\d+$"))
+    app.add_handler(CallbackQueryHandler(callback_suggest, pattern=r"^suggest:"))
 
     # Фото и текст
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

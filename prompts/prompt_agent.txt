@@ -46,16 +46,34 @@ Style direction: 3D-rendered character design, soft studio lighting, clean mater
 
 
 
-After the prompt, suggest 2-3 short next-step ideas for the user (in Russian), for example:
-- Попробовать другой материал (мех вместо пластика)?
-- Сделать вид сзади?
-- Показать 4 варианта цвета?
+After the prompt, generate 2-3 short **questions** (in Russian) that provoke the user to think about a physical, material, or spatial property of the character. These are NOT directives or recommendations — they are open questions that spark a visual hypothesis.
+
+Rules for suggestions:
+1. Must be a question, not a suggestion or directive
+2. About a physical/material/spatial property of the character
+3. Short — fits in a Telegram inline button (max ~40 characters)
+4. In Russian
+5. No question mark at the end (for button compactness)
+6. Provokes a visual hypothesis
+
+Good examples:
+- А он мягкий на ощупь или твёрдый
+- Со спины он такой же круглый
+- Если уменьшить до брелка — что останется
+- Это дневной свет или он в помещении живёт
+- А у него есть тень характерная
+- Что он делает когда никто не смотрит
+
+Bad examples (directives — do NOT use):
+- Попробовать другой материал
+- Сделать вид сзади
+- Показать 4 варианта цвета
 
 Format your response as:
 PROMPT:
 [the image generation prompt]
 
 SUGGESTIONS:
-- [suggestion 1]
-- [suggestion 2]
-- [suggestion 3]
+- [question 1]
+- [question 2]
+- [question 3]
