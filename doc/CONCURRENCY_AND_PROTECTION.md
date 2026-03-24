@@ -95,11 +95,12 @@ async def save_user_data(data: dict):
 **4. Статус-сообщения с прогрессом**
 
 ```python
-status_msg = await update.message.reply_text("⏳ Генерирую промпт...")
+status = StatusMessage(context.bot, chat_id)
+await status.start()                          # `📝 пишу промпт` с анимацией точек
 # ... generate_prompt ...
-await status_msg.edit_text(f"⏳ Генерирую 4 варианта ({model_name})...")
+await status.set_phase(StatusMessage.IMAGE)    # `🎨 генерирую` с анимацией точек
 # ... generate_images ...
-await status_msg.delete()
+await status.done()                            # удаляет сообщение
 # отправить сетку
 ```
 
@@ -238,5 +239,5 @@ DAILY_LIMIT_PER_USER=50
 
 - **`concurrent_updates(True)`** — добавлено в `ApplicationBuilder`. Без этого `python-telegram-bot` обрабатывает апдейты последовательно и lock никогда не срабатывает
 - **Сессии по `user_id`**, а не по `chat_id` — чтобы в групповых чатах каждый пользователь имел свою сессию, lock и лимит
-- **Статус-сообщения с прогрессом** (п.4 из плана) — не реализованы отдельным механизмом, используются существующие текстовые сообщения ("Генерирую промпт...", "Генерирую N вариантов...")
+- **Статус-сообщения с прогрессом** (п.4 из плана) — реализован класс `StatusMessage` в `bot.py`: одно сообщение, редактируется in-place с анимацией точек. Две фазы: `PROMPT` (`📝 пишу промпт`) → `IMAGE` (`🎨 генерирую`). После генерации сообщение удаляется
 - **`save_default_model`** стала async (с `_file_lock` и `asyncio.to_thread`)
