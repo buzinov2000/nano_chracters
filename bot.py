@@ -35,16 +35,32 @@ _STATUS_DOTS_INTERVAL = 1.5  # секунд между обновлениями 
 class StatusMessage:
     """Одно статус-сообщение, которое редактируется in-place (BOT_TOV)."""
 
-    _PHASES = ["🎨 генерирую", "🎨 генерирую ·", "🎨 генерирую · ·", "🎨 генерирую · · ·"]
+    PROMPT = ["`📝 пишу промпт`", "`📝 пишу промпт ·`", "`📝 пишу промпт · ·`", "`📝 пишу промпт · · ·`"]
+    IMAGE = ["`🎨 генерирую`", "`🎨 генерирую ·`", "`🎨 генерирую · ·`", "`🎨 генерирую · · ·`"]
 
     def __init__(self, bot, chat_id: int):
         self._bot = bot
         self._chat_id = chat_id
         self._message = None
         self._task: asyncio.Task | None = None
+        self._phases = self.PROMPT
 
-    async def start(self) -> None:
-        self._message = await self._bot.send_message(self._chat_id, self._PHASES[0])
+    async def start(self, phases=None) -> None:
+        if phases:
+            self._phases = phases
+        self._message = await self._bot.send_message(self._chat_id, self._phases[0], parse_mode="Markdown")
+        self._task = asyncio.create_task(self._animate())
+
+    async def set_phase(self, phases) -> None:
+        """Переключает фазу анимации (напр. с промпта на генерацию)."""
+        self._phases = phases
+        if self._task:
+            self._task.cancel()
+        if self._message:
+            try:
+                await self._message.edit_text(phases[0], parse_mode="Markdown")
+            except Exception:
+                pass
         self._task = asyncio.create_task(self._animate())
 
     async def _animate(self) -> None:
@@ -52,9 +68,9 @@ class StatusMessage:
         try:
             while True:
                 await asyncio.sleep(_STATUS_DOTS_INTERVAL)
-                text = self._PHASES[idx % len(self._PHASES)]
+                text = self._phases[idx % len(self._phases)]
                 try:
-                    await self._message.edit_text(text)
+                    await self._message.edit_text(text, parse_mode="Markdown")
                 except Exception:
                     pass
                 idx += 1
@@ -112,7 +128,7 @@ def authorized(func):
         user = update.effective_user
         if ALLOWED_USERS and (not user or user.id not in ALLOWED_USERS):
             if update.message:
-                await update.message.reply_text("⛔ Доступ ограничен.")
+                await update.message.reply_text("`доступ ограничен`", parse_mode="Markdown")
             elif update.callback_query:
                 await update.callback_query.answer("⛔ Доступ ограничен.", show_alert=True)
             return
@@ -142,7 +158,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     session = get_session(user_id)
     mode_info = IMAGE_MODELS[session.image_mode]
 
-    await update.message.reply_text("🌱 новый проект")
+    await update.message.reply_text("`🌱 новый проект`", parse_mode="Markdown")
 
 
 # ---------- /model ----------
@@ -164,7 +180,7 @@ async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     session = get_session(user_id)
 
     await update.message.reply_text(
-        "Выберите модель генерации:",
+        "`модель:`", parse_mode="Markdown",
         reply_markup=_model_keyboard(session.image_mode),
     )
 
@@ -185,7 +201,7 @@ async def callback_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     info = IMAGE_MODELS[mode]
 
     await query.edit_message_text(
-        f"Модель переключена: {info['label']} ({info['count']} шт) — установлена по умолчанию",
+        f"`модель: {info['label']} ({info['count']} шт)`", parse_mode="Markdown",
     )
 
 
@@ -238,7 +254,7 @@ async def _generate_more(chat_id: int, user_id: int, session, context: ContextTy
         info = IMAGE_MODELS[session.image_mode]
 
         status = StatusMessage(context.bot, chat_id)
-        await status.start()
+        await status.start(StatusMessage.IMAGE)
         await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
 
         t0 = time.monotonic()
@@ -293,7 +309,7 @@ async def cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("`сессия пуста — отправь скетч`", parse_mode="Markdown")
         return
 
-    await update.message.reply_text(f"Текущий промпт:\n\n{session.current_prompt}")
+    await update.message.reply_text(f"`{session.current_prompt}`", parse_mode="Markdown")
 
 
 # ---------- /prompt_edit ----------
@@ -308,7 +324,7 @@ async def cmd_prompt_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     session.awaiting_prompt_edit = True
-    await update.message.reply_text("Что нужно поправить в промпте? Напишите правки следующим сообщением:")
+    await update.message.reply_text("`напиши правки к промпту`", parse_mode="Markdown")
 
 
 async def _edit_prompt(chat_id: int, user_id: int, session, edits: str, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -431,6 +447,7 @@ async def _run_full_pipeline(chat_id: int, user_id: int, sketch: bytes, caption:
         session.current_prompt = prompt
         session.suggestions = suggestions
 
+        await status.set_phase(StatusMessage.IMAGE)
         await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
 
         try:
@@ -489,10 +506,9 @@ async def _process_photos(chat_id: int, user_id: int, photos: list[bytes], capti
     session.ref_images = photos[1:] if len(photos) > 1 else []
 
     if not caption:
-        ref_note = f" + {len(session.ref_images)} реф(ов)" if session.ref_images else ""
         await context.bot.send_message(
             chat_id,
-            f"Скетч сохранён{ref_note}. Добавьте текстовое описание гипотезы к картинке.",
+            "`скетч принят — добавь гипотезу`", parse_mode="Markdown",
         )
         return
 
