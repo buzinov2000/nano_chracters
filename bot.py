@@ -29,6 +29,57 @@ logger = logging.getLogger(__name__)
 
 _media_group_buffer: dict[str, dict] = {}
 MEDIA_GROUP_DELAY = 1.5
+_STATUS_DOTS_INTERVAL = 1.5  # секунд между обновлениями точек
+
+
+class StatusMessage:
+    """Одно статус-сообщение, которое редактируется in-place (BOT_TOV)."""
+
+    _PHASES = ["🎨 генерирую", "🎨 генерирую ·", "🎨 генерирую · ·", "🎨 генерирую · · ·"]
+
+    def __init__(self, bot, chat_id: int):
+        self._bot = bot
+        self._chat_id = chat_id
+        self._message = None
+        self._task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        self._message = await self._bot.send_message(self._chat_id, self._PHASES[0])
+        self._task = asyncio.create_task(self._animate())
+
+    async def _animate(self) -> None:
+        idx = 1
+        try:
+            while True:
+                await asyncio.sleep(_STATUS_DOTS_INTERVAL)
+                text = self._PHASES[idx % len(self._PHASES)]
+                try:
+                    await self._message.edit_text(text)
+                except Exception:
+                    pass
+                idx += 1
+        except asyncio.CancelledError:
+            pass
+
+    async def done(self) -> None:
+        """Останавливает анимацию и удаляет статус-сообщение."""
+        if self._task:
+            self._task.cancel()
+        if self._message:
+            try:
+                await self._message.delete()
+            except Exception:
+                pass
+
+    async def fail(self, text: str) -> None:
+        """Останавливает анимацию и показывает ошибку."""
+        if self._task:
+            self._task.cancel()
+        if self._message:
+            try:
+                await self._message.edit_text(text)
+            except Exception:
+                pass
 
 ERROR_MESSAGES = {
     "safety_filter": "Генерация заблокирована фильтрами безопасности. Попробуйте переформулировать гипотезу.",
@@ -196,7 +247,8 @@ async def _generate_more(chat_id: int, user_id: int, session, context: ContextTy
     async with session.lock:
         info = IMAGE_MODELS[session.image_mode]
 
-        await context.bot.send_message(chat_id, "Генерирую ещё 2 варианта...")
+        status = StatusMessage(context.bot, chat_id)
+        await status.start()
         await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
 
         t0 = time.monotonic()
@@ -211,11 +263,11 @@ async def _generate_more(chat_id: int, user_id: int, session, context: ContextTy
                 timeout_ms=info["timeout"],
             )
         except GenerationError as e:
-            await context.bot.send_message(chat_id, _error_message(e))
+            await status.fail(_error_message(e))
             return
 
         if not new_images:
-            await context.bot.send_message(chat_id, "Не удалось сгенерировать. Попробуйте ещё раз.")
+            await status.fail("Не удалось сгенерировать. Попробуйте ещё раз.")
             return
 
         elapsed = int(time.monotonic() - t0)
@@ -231,10 +283,11 @@ async def _generate_more(chat_id: int, user_id: int, session, context: ContextTy
         extra = [InlineKeyboardButton("Ещё 2 варианта", callback_data="more")]
         keyboard = _pick_keyboard(len(session.images), extra_buttons=extra)
 
+        await status.done()
+
         await context.bot.send_photo(
             chat_id,
             photo=grid,
-            caption=f"Добавлено {len(new_images)} вариантов (всего {len(session.images)}) за {elapsed} сек",
             reply_markup=keyboard,
         )
 
@@ -273,7 +326,7 @@ async def _edit_prompt(chat_id: int, user_id: int, session, edits: str, context:
         await context.bot.send_message(chat_id, "⏳ Предыдущая генерация ещё идёт, подождите.")
         return
 
-    await context.bot.send_message(chat_id, "Обновляю промпт...")
+    # Статус показывается внутри _run_full_pipeline
 
     edit_hypothesis = (
         f"Текущий промпт: {session.current_prompt}\n"
@@ -347,22 +400,19 @@ async def _run_full_pipeline(chat_id: int, user_id: int, sketch: bytes, caption:
         info = IMAGE_MODELS[session.image_mode]
         t0 = time.monotonic()
 
-        await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+        status = StatusMessage(context.bot, chat_id)
+        await status.start()
 
         try:
             prompt, suggestions = await generate_prompt(sketch, caption, ref_images=ref_images, grid=info.get("grid", False))
         except Exception:
             logger.exception("Ошибка генерации промпта")
-            await context.bot.send_message(chat_id, "Не удалось сгенерировать промпт. Попробуйте ещё раз.")
+            await status.fail("Не удалось сгенерировать промпт. Попробуйте ещё раз.")
             return
 
         session.current_prompt = prompt
         session.suggestions = suggestions
 
-        await context.bot.send_message(
-            chat_id,
-            f"Промпт готов. Генерирую {info['count']} вариантов ({info['label']})...",
-        )
         await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
 
         try:
@@ -375,11 +425,11 @@ async def _run_full_pipeline(chat_id: int, user_id: int, sketch: bytes, caption:
                 timeout_ms=info["timeout"],
             )
         except GenerationError as e:
-            await context.bot.send_message(chat_id, _error_message(e))
+            await status.fail(_error_message(e))
             return
 
         if not images:
-            await context.bot.send_message(chat_id, "Не удалось сгенерировать картинки. Попробуйте ещё раз.")
+            await status.fail("Не удалось сгенерировать картинки. Попробуйте ещё раз.")
             return
 
         elapsed = int(time.monotonic() - t0)
@@ -398,18 +448,20 @@ async def _run_full_pipeline(chat_id: int, user_id: int, sketch: bytes, caption:
             extra = [InlineKeyboardButton("Ещё 2 варианта", callback_data="more")]
         keyboard = _pick_keyboard(len(images), extra_buttons=extra)
 
+        await status.done()
+
         await context.bot.send_photo(
             chat_id,
             photo=grid,
-            caption=f"Сгенерировано {len(images)} вариантов за {elapsed} сек ({info['label']})",
             reply_markup=keyboard,
         )
 
-        suggestions_text = "\n".join(f"• {s}" for s in suggestions)
-        await context.bot.send_message(
-            chat_id,
-            f"Подсказки:\n{suggestions_text}",
-        )
+        if suggestions:
+            suggestions_text = "\n".join(f"• {s}" for s in suggestions)
+            await context.bot.send_message(
+                chat_id,
+                f"Подсказки:\n{suggestions_text}",
+            )
 
 
 # ---------- Фото ----------
@@ -432,9 +484,6 @@ async def _process_photos(chat_id: int, user_id: int, photos: list[bytes], capti
             f"Скетч сохранён{ref_note}. Добавьте текстовое описание гипотезы к картинке.",
         )
         return
-
-    ref_note = f" (+ {len(session.ref_images)} рефов)" if session.ref_images else ""
-    await context.bot.send_message(chat_id, f"Получил скетч{ref_note}. Генерирую промпт...")
 
     await _run_full_pipeline(
         chat_id, user_id, photos[0], caption,
