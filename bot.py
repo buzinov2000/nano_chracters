@@ -463,6 +463,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     file = await photo.get_file()
     photo_bytes = bytes(await file.download_as_bytearray())
 
+    # 👀 реакция — мгновенный «кивок» (BOT_TOV)
+    try:
+        await update.message.set_reaction("👀")
+    except Exception:
+        pass
+
     media_group_id = update.message.media_group_id
 
     if media_group_id:

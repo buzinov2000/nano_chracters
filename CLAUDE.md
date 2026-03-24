@@ -10,6 +10,9 @@
 - `doc/DEVELOPMENT_PLAN.md` — пошаговый план, реализованные этапы, заметки по SDK
 - `doc/VPS_OPS.md` — сервер, деплой, systemd, логи
 - `doc/CONCURRENCY_AND_PROTECTION.md` — параллельность, whitelist, rate limiting (план)
+- `doc/GROUP_MODE.md` — работа в группах: @mention trigger, reply-итерации
+- `doc/BOT_TOV.md` — тон бота: статусы, ошибки, подсказки, ритм диалога
+- `doc/BOT_TOV.md` — тон бота, статусы, формат ошибок, подсказки-вопросы
 
 ## Ключевые решения
 

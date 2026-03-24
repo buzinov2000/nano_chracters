@@ -72,6 +72,8 @@ pip install -r requirements.txt
 nano .env
 # TELEGRAM_BOT_TOKEN=<prod-токен от @BotFather>
 # GOOGLE_API_KEY=<ключ Google AI Studio>
+# ALLOWED_USERS=108117608          (пусто = открыт для всех)
+# DAILY_LIMIT_PER_USER=50
 ```
 
 SSH-ключ для GitHub уже есть на сервере (`/home/petrick/.ssh/id_ed25519`), добавлен как deploy key в petrick-bot. Нужно добавить тот же ключ как deploy key в репозиторий nano_characters:
@@ -142,6 +144,21 @@ journalctl -u nano-characters -n 50
 
 # За сегодня
 journalctl -u nano-characters --since today
+```
+
+---
+
+## Логи генераций (мониторинг расходов)
+
+```bash
+# Все генерации за сегодня
+journalctl -u nano-characters --since today | grep "generation user"
+
+# Количество генераций за сегодня
+journalctl -u nano-characters --since today | grep "generation user" | wc -l
+
+# Формат строки:
+# generation user=108117608 model=gemini-2.5-flash-image mode=fast variants=4 time=25s
 ```
 
 ---

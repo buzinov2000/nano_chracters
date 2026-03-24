@@ -337,7 +337,7 @@ SUGGESTIONS:
 
 ---
 
-## Следующий этап — Деплой на VPS + разделение prod/beta
+## Реализованный этап — Деплой на VPS + разделение prod/beta
 
 ### Схема работы
 
@@ -388,6 +388,21 @@ main ← только проверенный код, автоматически 
   ↑
 feature-* / fix-* ← разработка локально с beta-ботом
 ```
+
+---
+
+## Реализованный этап — Параллельность и защита
+
+Подробности в `CONCURRENCY_AND_PROTECTION.md`. Все пункты выполнены:
+
+- [x] Семафор `MAX_CONCURRENT_API_CALLS=8` в `imagen.py`
+- [x] Session lock — блокировка параллельных генераций одного пользователя
+- [x] File lock на `user_data.json` (async, `asyncio.to_thread`)
+- [x] Whitelist `ALLOWED_USERS` + декоратор `@authorized`
+- [x] Дневной лимит `DAILY_LIMIT_PER_USER=50`
+- [x] Логирование генераций: user, model, mode, variants, time
+- [x] `concurrent_updates(True)` в ApplicationBuilder
+- [x] Сессии по `user_id` (поддержка групповых чатов)
 
 ---
 

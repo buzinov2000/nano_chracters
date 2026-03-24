@@ -106,7 +106,7 @@
 
 | Компонент | Решение |
 |-----------|---------|
-| Бот | Python 3.11+, `python-telegram-bot` v21+ (async) |
+| Бот | Python 3.11+, `python-telegram-bot` v21+ (async, `concurrent_updates=True`) |
 | SDK | `google-genai` (не `google-generativeai`) |
 | Промпт-агент | Gemini 2.5 Flash |
 | Генерация картинок | Gemini Image (3 модели, см. выше) |
@@ -124,18 +124,20 @@
 ```
 nano_characters/
 ├── doc/
-│   ├── CHARACTER_PIPELINE_BOT.md   ← этот файл
-│   └── DEVELOPMENT_PLAN.md         ← план разработки
+│   ├── CHARACTER_PIPELINE_BOT.md       ← этот файл
+│   ├── DEVELOPMENT_PLAN.md             ← план разработки
+│   ├── CONCURRENCY_AND_PROTECTION.md   ← параллельность, whitelist, rate limiting
+│   └── VPS_OPS.md                      ← сервер, деплой, systemd, логи
 ├── prompts/
 │   ├── prompt_agent.txt            ← системный промпт (fast-модель, без grid)
 │   └── prompt_agent_grid.txt       ← системный промпт (Pro/Quality, с grid 2x2)
-├── bot.py                      ← точка входа, хэндлеры Telegram
+├── bot.py                      ← точка входа, хэндлеры Telegram, @authorized, session lock
 ├── agent.py                    ← промпт-агент (Gemini Flash), выбор промпта по режиму
-├── imagen.py                   ← генерация картинок (Gemini Image), retry, grid split
+├── imagen.py                   ← генерация картинок (Gemini Image), retry, grid split, семафор
 ├── grid.py                     ← сборка сетки превью с номерами (Pillow)
-├── session.py                  ← состояние сессии + персистентная дефолтная модель
-├── config.py                   ← загрузка .env, константы, конфигурация моделей
-├── .env                        ← API ключи (в .gitignore)
+├── session.py                  ← состояние сессии, lock, дневной лимит, персистентная модель
+├── config.py                   ← загрузка .env, константы, модели, whitelist, лимиты
+├── .env                        ← API ключи + ALLOWED_USERS + DAILY_LIMIT (в .gitignore)
 ├── user_data.json              ← сохранённые настройки пользователя (в .gitignore)
 ├── .gitignore
 └── requirements.txt
@@ -148,6 +150,8 @@ nano_characters/
 ```
 TELEGRAM_BOT_TOKEN=...
 GOOGLE_API_KEY=...
+ALLOWED_USERS=123456789,987654321    # пусто = открыт для всех
+DAILY_LIMIT_PER_USER=50              # генераций в день на пользователя
 ```
 
 ---
@@ -171,13 +175,16 @@ GOOGLE_API_KEY=...
 - [x] **Доп.** — два системных промпта для агента: обычный и grid-версия (grid-инструкция не теряется при редактировании)
 - [x] **Доп.** — персистентная дефолтная модель (user_data.json)
 - [x] **Доп.** — per-model таймауты (HttpOptions), кнопка «Ещё 2 варианта»
+- [x] **Доп.** — деплой на VPS (systemd), два бота prod/beta
+- [x] **Доп.** — параллельность и защита: семафор API, session lock, whitelist, дневной лимит, логирование генераций
+- [x] **Доп.** — `concurrent_updates(True)` для параллельной обработки апдейтов
+- [x] **Доп.** — сессии по `user_id` (поддержка групповых чатов)
 
 ---
 
 ## Не реализовано (бэклог)
 
 - Транскрипция голосовых через Gemini Audio
-- Деплой на VPS (systemd)
 - Персистентность сессий между перезапусками (картинки, промпты)
 - A/B тест качества промптов Gemini Flash vs Claude Haiku
 
@@ -203,6 +210,11 @@ GOOGLE_API_KEY=...
 - `thinking_level` не поддерживается image-моделями — только текстовыми (gemini-2.5-flash и т.д.)
 - `aspect_ratio` в ImageConfig: поддерживаемые значения `"1:1"`, `"2:3"`, `"3:2"`, `"3:4"`, `"4:3"`, `"9:16"`, `"16:9"`. При `None` (default) API ставит 1:1. Мы не задаём — модель ориентируется по скетчу
 - Telegram httpx таймауты увеличены: read=60, write=60, connect=30 (дефолтные слишком маленькие для отправки больших файлов)
+- **Сессии привязаны к `user_id`**, а не к `chat_id` — в групповом чате каждый пользователь имеет свою сессию, lock и лимит
+- **`concurrent_updates=True`** — необходимо для работы session lock и параллельной обработки нескольких пользователей
+- **Семафор** (`MAX_CONCURRENT_API_CALLS=8`) ограничивает параллельные вызовы к Image API, предотвращая 429 от Google
+- **Дневной лимит** живёт в памяти — при перезапуске бота сбрасывается
+- **Группы:** для работы в групповых чатах нужно отключить Privacy Mode через @BotFather (`/setprivacy` → Turn off), иначе бот не видит обычные сообщения
 
 ## Известные особенности и решённые проблемы
 
